@@ -202,6 +202,62 @@ start_vm() {
         -serial mon:stdio
 }
 
+stop_vm() {
+    local vms=($(ls "$VM_DIR"/*.conf 2>/dev/null | xargs -I{} basename {} .conf))
+
+    if [ ${#vms[@]} -eq 0 ]; then
+        echo "No VMs found!"
+        return
+    fi
+
+    echo "Select a VM to stop:"
+    for i in "${!vms[@]}"; do
+        echo "  $((i+1))) ${vms[$i]}"
+    done
+
+    read -p "Enter choice: " vm_choice
+    local vm_name="${vms[$((vm_choice-1))]}"
+
+    source "$VM_DIR/$vm_name.conf"
+
+    if pgrep -f "qemu.*$IMG_FILE" > /dev/null; then
+        pkill -f "qemu.*$IMG_FILE"
+        echo "$VM_NAME stopped!"
+    else
+        echo "$VM_NAME is not running!"
+    fi
+}
+
+delete_vm() {
+    local vms=($(ls "$VM_DIR"/*.conf 2>/dev/null | xargs -I{} basename {} .conf))
+
+    if [ ${#vms[@]} -eq 0 ]; then
+        echo "No VMs found!"
+        return
+    fi
+
+    echo "Select a VM to delete:"
+    for i in "${!vms[@]}"; do
+        echo "  $((i+1))) ${vms[$i]}"
+    done
+
+    read -p "Enter choice: " vm_choice
+    local vm_name="${vms[$((vm_choice-1))]}"
+
+    source "$VM_DIR/$vm_name.conf"
+
+    read -p "Are you sure you want to delete $VM_NAME? (y/N): " confirm
+    
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        rm -f "$IMG_FILE"
+        rm -f "$SEED_FILE"
+        rm -f "$VM_DIR/$vm_name.conf"
+        echo "$VM_NAME deleted!"
+    else
+        echo "Deletion cancelled."
+    fi
+}
+
 main_menu() {
     while true; do
         display_header
