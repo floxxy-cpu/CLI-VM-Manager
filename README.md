@@ -4,8 +4,10 @@ A W.I.P bash script that creates and manages QEMU VMs.
 ## Current Features
 1. Create a VM
 2. Start a VM
-3. Stop a VM (NEW)
-4. Delete a VM (NEW)
+3. Stop a VM
+4. Delete a VM
+5. Import Existing VM (NEW)
+6. Export VM (NEW)
 
 ## W.I.P Features
 3. VM Settings
