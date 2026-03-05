@@ -130,8 +130,15 @@ create_vm() {
     DISK_SIZE="${DISK_SIZE:-100M}"
 
     # SSH port - default 2222
-    read -p "SSH port (default: 2222): " SSH_PORT
-    SSH_PORT="${SSH_PORT:-2222}"
+    while true; do
+        read -p "SSH port (default: 2222): " SSH_PORT
+        SSH_PORT="${SSH_PORT:-2222}"
+        if ss -tln 2>/dev/null | grep -q ":$SSH_PORT "; then
+            echo "Port $SSH_PORT is already in use, please choose another!"
+        else
+            break
+        fi
+    done
 
     # OS - required
     while true; do
@@ -168,9 +175,8 @@ EOF
 }
 
 start_vm() {
-    # List available VMs
     local vms=($(ls "$VM_DIR"/*.conf 2>/dev/null | xargs -I{} basename {} .conf))
-    
+
     if [ ${#vms[@]} -eq 0 ]; then
         echo "No VMs found!"
         return
@@ -184,16 +190,24 @@ start_vm() {
     read -p "Enter choice: " vm_choice
     local vm_name="${vms[$((vm_choice-1))]}"
 
-    # Load the VM config
     source "$VM_DIR/$vm_name.conf"
 
+    # KVM check
+    if [ -e /dev/kvm ]; then
+        KVM_FLAGS="-enable-kvm -cpu host"
+        echo "KVM available, using hardware acceleration!"
+    else
+        KVM_FLAGS=""
+        echo "KVM not available, using software emulation (slower)..."
+    fi
+
     echo "Starting $VM_NAME..."
+    echo "SSH into your VM with: ssh -p $SSH_PORT $USERNAME@localhost"
 
     qemu-system-x86_64 \
-        -enable-kvm \
+        $KVM_FLAGS \
         -m "$MEMORY" \
         -smp "$CPUS" \
-        -cpu host \
         -drive "file=$IMG_FILE,format=qcow2,if=virtio" \
         -drive "file=$SEED_FILE,format=raw,if=virtio" \
         -device virtio-net-pci,netdev=n0 \
@@ -247,7 +261,7 @@ delete_vm() {
     source "$VM_DIR/$vm_name.conf"
 
     read -p "Are you sure you want to delete $VM_NAME? (y/N): " confirm
-    
+
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         rm -f "$IMG_FILE"
         rm -f "$SEED_FILE"
@@ -256,6 +270,203 @@ delete_vm() {
     else
         echo "Deletion cancelled."
     fi
+}
+
+show_info() {
+    local vms=($(ls "$VM_DIR"/*.conf 2>/dev/null | xargs -I{} basename {} .conf))
+
+    if [ ${#vms[@]} -eq 0 ]; then
+        echo "No VMs found!"
+        return
+    fi
+
+    echo "Select a VM to show info:"
+    for i in "${!vms[@]}"; do
+        echo "  $((i+1))) ${vms[$i]}"
+    done
+
+    read -p "Enter choice: " vm_choice
+    local vm_name="${vms[$((vm_choice-1))]}"
+
+    source "$VM_DIR/$vm_name.conf"
+
+    echo -e "\033[0;93m"
+    echo "========================================"
+    echo "  VM Info: $VM_NAME"
+    echo "========================================"
+    echo "  OS:       $OS_NAME"
+    echo "  Username: $USERNAME"
+    echo "  Password: $PASSWORD"
+    echo "  RAM:      $MEMORY MB"
+    echo "  CPUs:     $CPUS"
+    echo "  Disk:     $DISK_SIZE"
+    echo "  SSH Port: $SSH_PORT"
+    echo "  IMG File: $IMG_FILE"
+    echo "========================================"
+    echo -e "\033[0m"
+}
+
+vm_settings() {
+    local vms=($(ls "$VM_DIR"/*.conf 2>/dev/null | xargs -I{} basename {} .conf))
+
+    if [ ${#vms[@]} -eq 0 ]; then
+        echo "No VMs found!"
+        return
+    fi
+
+    echo "Select a VM to configure:"
+    for i in "${!vms[@]}"; do
+        echo "  $((i+1))) ${vms[$i]}"
+    done
+
+    read -p "Enter choice: " vm_choice
+    local vm_name="${vms[$((vm_choice-1))]}"
+
+    source "$VM_DIR/$vm_name.conf"
+
+    while true; do
+        echo -e "\033[0;93m"
+        echo "  === VM Settings: $VM_NAME ==="
+        echo "  1) Resize Disk (current: $DISK_SIZE)"
+        echo "  2) Resize RAM (current: $MEMORY MB)"
+        echo "  3) Resize CPU cores (current: $CPUS)"
+        echo "  4) Show Performance"
+        echo "  0) Back"
+        echo -e "\033[0m"
+
+        read -p "Enter choice: " settings_choice
+
+        case $settings_choice in
+            1)
+                read -p "New disk size (e.g. 20G): " new_disk
+                qemu-img resize "$IMG_FILE" "$new_disk"
+                DISK_SIZE="$new_disk"
+                sed -i "s/DISK_SIZE=.*/DISK_SIZE=\"$DISK_SIZE\"/" "$VM_DIR/$vm_name.conf"
+                echo "Disk resized to $DISK_SIZE!"
+                ;;
+            2)
+                read -p "New RAM in MB (e.g. 2048): " new_ram
+                MEMORY="$new_ram"
+                sed -i "s/MEMORY=.*/MEMORY=\"$MEMORY\"/" "$VM_DIR/$vm_name.conf"
+                echo "RAM updated to $MEMORY MB!"
+                ;;
+            3)
+                read -p "New CPU core count (e.g. 4): " new_cpus
+                CPUS="$new_cpus"
+                sed -i "s/CPUS=.*/CPUS=\"$CPUS\"/" "$VM_DIR/$vm_name.conf"
+                echo "CPUs updated to $CPUS!"
+                ;;
+            4)
+                local qemu_pid=$(pgrep -f "qemu.*$IMG_FILE" || true)
+                if [ -n "$qemu_pid" ]; then
+                    echo "CPU Usage:"
+                    ps -p "$qemu_pid" -o %cpu,%mem --no-headers
+                    echo "Memory Usage:"
+                    free -h
+                else
+                    echo "$VM_NAME is not running!"
+                fi
+                ;;
+            0)
+                break
+                ;;
+            *)
+                echo "Invalid option!"
+                ;;
+        esac
+    done
+}
+
+export_vm() {
+    local vms=($(ls "$VM_DIR"/*.conf 2>/dev/null | xargs -I{} basename {} .conf))
+
+    if [ ${#vms[@]} -eq 0 ]; then
+        echo "No VMs found!"
+        return
+    fi
+
+    echo "Select a VM to export:"
+    for i in "${!vms[@]}"; do
+        echo "  $((i+1))) ${vms[$i]}"
+    done
+
+    read -p "Enter choice: " vm_choice
+    local vm_name="${vms[$((vm_choice-1))]}"
+
+    source "$VM_DIR/$vm_name.conf"
+
+    read -p "Enter export directory (default: $HOME): " export_dir
+    export_dir="${export_dir:-$HOME}"
+
+    local export_path="$export_dir/$vm_name"
+    mkdir -p "$export_path"
+
+    echo "Exporting $VM_NAME to $export_path..."
+    cp "$IMG_FILE" "$export_path/"
+    cp "$SEED_FILE" "$export_path/"
+
+    cat > "$export_path/$vm_name.conf" <<EOF
+VM_NAME="$VM_NAME"
+USERNAME="$USERNAME"
+PASSWORD="$PASSWORD"
+MEMORY="$MEMORY"
+CPUS="$CPUS"
+DISK_SIZE="$DISK_SIZE"
+SSH_PORT="$SSH_PORT"
+OS_NAME="$OS_NAME"
+IMG_URL="$IMG_URL"
+IMG_FILE="$vm_name.img"
+SEED_FILE="$vm_name-seed.iso"
+EOF
+
+    echo "VM '$VM_NAME' exported to $export_path!"
+    echo "Copy that folder to your other PC and use Import VM!"
+}
+
+import_vm() {
+    read -p "Enter path to exported VM folder: " import_path
+
+    if [ ! -d "$import_path" ]; then
+        echo "Directory not found!"
+        return
+    fi
+
+    local conf_file=$(ls "$import_path"/*.conf 2>/dev/null | head -1)
+
+    if [ -z "$conf_file" ]; then
+        echo "No VM config found in that directory!"
+        return
+    fi
+
+    source "$conf_file"
+
+    if [ -f "$VM_DIR/$VM_NAME.conf" ]; then
+        echo "A VM with name '$VM_NAME' already exists!"
+        read -p "Enter a new name for the imported VM: " VM_NAME
+    fi
+
+    read -p "Enter SSH port for this PC (default: $SSH_PORT): " new_port
+    SSH_PORT="${new_port:-$SSH_PORT}"
+
+    cp "$import_path/$IMG_FILE" "$VM_DIR/$VM_NAME.img"
+    cp "$import_path/$SEED_FILE" "$VM_DIR/$VM_NAME-seed.iso"
+
+    cat > "$VM_DIR/$VM_NAME.conf" <<EOF
+VM_NAME="$VM_NAME"
+USERNAME="$USERNAME"
+PASSWORD="$PASSWORD"
+MEMORY="$MEMORY"
+CPUS="$CPUS"
+DISK_SIZE="$DISK_SIZE"
+SSH_PORT="$SSH_PORT"
+OS_NAME="$OS_NAME"
+IMG_URL="$IMG_URL"
+IMG_FILE="$VM_DIR/$VM_NAME.img"
+SEED_FILE="$VM_DIR/$VM_NAME-seed.iso"
+EOF
+
+    echo "VM '$VM_NAME' imported successfully!"
+    echo "You can now start it from the main menu."
 }
 
 main_menu() {
@@ -268,6 +479,8 @@ main_menu() {
         echo "  4) Delete VM"
         echo "  5) VM Settings"
         echo "  6) Show Info"
+        echo "  7) Export VM"
+        echo "  8) Import VM"
         echo "  0) Exit"
         echo -e "\033[0m"
 
@@ -280,6 +493,8 @@ main_menu() {
             4) delete_vm ;;
             5) vm_settings ;;
             6) show_info ;;
+            7) export_vm ;;
+            8) import_vm ;;
             0) exit 0 ;;
             *) echo "Invalid option" ;;
         esac
